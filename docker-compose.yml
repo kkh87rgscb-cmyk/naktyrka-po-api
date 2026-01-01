@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: steam-smm-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./bot_database.db:/app/bot_database.db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8443/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
