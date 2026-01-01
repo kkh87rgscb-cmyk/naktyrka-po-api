@@ -11,6 +11,7 @@ from sqlalchemy import select
 from bot.models.database import User, Payment, async_session_maker
 from bot.services.antilopay import AntilopayClient, generate_order_id
 from bot.services.cryptobot import CryptoBotClient
+from bot.services.exchange_rates import get_crypto_rates
 from bot.utils.keyboards import (
     topup_amount_keyboard, 
     payment_method_keyboard, 
@@ -312,18 +313,13 @@ async def callback_crypto_currency(callback: CallbackQuery, state: FSMContext):
     amount_rub = float(parts[2])
     
     await callback.message.edit_text(
-        "⏳ Создаём счёт на оплату...",
+        "⏳ Получаем курс с Binance...",
         parse_mode="HTML"
     )
     
-    # Fixed exchange rates (approximate)
-    # USDT ≈ 90 RUB, TON ≈ 350 RUB
-    EXCHANGE_RATES = {
-        "USDT": 90.0,
-        "TON": 350.0,
-    }
-    
-    rate = EXCHANGE_RATES.get(currency, 90.0)
+    # Get rates from Binance
+    rates = await get_crypto_rates()
+    rate = rates.get(currency, 90.0)
     crypto_amount = round(amount_rub / rate, 2)
     
     # Minimum amounts
@@ -375,10 +371,11 @@ async def callback_crypto_currency(callback: CallbackQuery, state: FSMContext):
 🪙 <b>Оплата криптовалютой</b>
 
 Сумма: <b>{crypto_amount} {currency}</b>
+💱 Курс: <b>1 {currency} = {rate:.2f} ₽</b>
 (≈ {amount_rub:.0f} ₽)
 
 Нажмите кнопку для оплаты.
-После оплаты нажмите "Проверить оплату":
+После оплаты нажмите "🔄 Проверить оплату":
 """
         
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
