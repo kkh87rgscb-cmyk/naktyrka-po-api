@@ -135,8 +135,6 @@ def crypto_currency_keyboard(amount: float) -> InlineKeyboardMarkup:
     currencies = [
         ("💵 USDT", "USDT"),
         ("💎 TON", "TON"),
-        ("₿ BTC", "BTC"),
-        ("Ξ ETH", "ETH"),
     ]
     
     for label, currency in currencies:

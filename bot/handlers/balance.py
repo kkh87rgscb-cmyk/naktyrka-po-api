@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from bot.models.database import User, Payment, async_session_maker
 from bot.services.antilopay import AntilopayClient, generate_order_id
-from bot.services.cryptobot import CryptoBotClient, convert_rub_to_crypto
+from bot.services.cryptobot import CryptoBotClient
 from bot.utils.keyboards import (
     topup_amount_keyboard, 
     payment_method_keyboard, 
@@ -316,16 +316,21 @@ async def callback_crypto_currency(callback: CallbackQuery, state: FSMContext):
         parse_mode="HTML"
     )
     
-    # Convert RUB to crypto
-    crypto_amount = await convert_rub_to_crypto(amount_rub, currency)
+    # Fixed exchange rates (approximate)
+    # USDT ≈ 90 RUB, TON ≈ 350 RUB
+    EXCHANGE_RATES = {
+        "USDT": 90.0,
+        "TON": 350.0,
+    }
     
-    if not crypto_amount:
-        await callback.message.edit_text(
-            "❌ Не удалось получить курс валют. Попробуйте позже.",
-            reply_markup=back_to_main_keyboard()
-        )
-        await callback.answer()
-        return
+    rate = EXCHANGE_RATES.get(currency, 90.0)
+    crypto_amount = round(amount_rub / rate, 2)
+    
+    # Minimum amounts
+    if currency == "USDT" and crypto_amount < 1:
+        crypto_amount = 1.0
+    if currency == "TON" and crypto_amount < 0.1:
+        crypto_amount = 0.1
     
     # Create CryptoBot invoice
     client = CryptoBotClient()
@@ -336,7 +341,7 @@ async def callback_crypto_currency(callback: CallbackQuery, state: FSMContext):
     result = await client.create_invoice(
         amount=crypto_amount,
         asset=currency,
-        description=f"Пополнение баланса Steam SMM Bot на {amount_rub:.0f}₽",
+        description=f"Пополнение баланса Steam SMM Bot на {amount_rub:.0f} RUB",
         payload=payload,
         expires_in=3600
     )
@@ -372,7 +377,8 @@ async def callback_crypto_currency(callback: CallbackQuery, state: FSMContext):
 Сумма: <b>{crypto_amount} {currency}</b>
 (≈ {amount_rub:.0f} ₽)
 
-Нажмите кнопку для оплаты:
+Нажмите кнопку для оплаты.
+После оплаты нажмите "Проверить оплату":
 """
         
         from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton

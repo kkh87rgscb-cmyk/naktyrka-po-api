@@ -12,7 +12,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from bot.config import settings
 from bot.models.database import init_db
 from bot.handlers import start, balance, boost, orders, admin
-from bot.services.webhook import PaymentWebhookServer
 
 # Configure logging
 logging.basicConfig(
@@ -54,28 +53,11 @@ async def main():
     dp.include_router(orders.router)
     dp.include_router(admin.router)
     
-    # Start webhook server for payments (in background)
-    webhook_server = PaymentWebhookServer(bot=bot)
-    
-    async def start_webhook_server():
-        """Start webhook server in background."""
-        try:
-            await webhook_server.start(
-                host="0.0.0.0",
-                port=settings.webhook_port
-            )
-        except Exception as e:
-            logger.error(f"Failed to start webhook server: {e}")
-    
-    # Create background task for webhook server
-    webhook_task = asyncio.create_task(start_webhook_server())
-    
     # Start bot polling
     logger.info("Starting bot...")
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        webhook_task.cancel()
         await bot.session.close()
 
 
