@@ -27,7 +27,6 @@ async def get_crypto_rates() -> dict:
         
         connector = aiohttp.TCPConnector(ssl=ssl_context)
         async with aiohttp.ClientSession(connector=connector) as session:
-            # Get prices in RUB for tether and toncoin
             async with session.get(
                 f"{COINGECKO_API_URL}/simple/price",
                 params={
@@ -48,7 +47,6 @@ async def get_crypto_rates() -> dict:
                         rates["TON"] = float(data["the-open-network"]["rub"])
     
     except Exception:
-        # Use fallback rates
         pass
     
     return rates
