@@ -285,6 +285,19 @@ async def process_email_and_create_payment(message: Message, state: FSMContext):
 @router.callback_query(F.data.startswith("pay:cryptobot:"))
 async def callback_cryptobot_payment(callback: CallbackQuery, state: FSMContext):
     """Handle CryptoBot payment - show currency selection."""
+    from bot.config import settings
+    
+    # Check if CryptoBot is configured
+    if not settings.cryptobot_api_token:
+        await callback.message.edit_text(
+            "❌ <b>Оплата криптовалютой временно недоступна</b>\n\n"
+            "CryptoBot не настроен. Обратитесь к администратору.",
+            reply_markup=back_to_main_keyboard(),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        return
+    
     amount = float(callback.data.split(":")[2])
     
     await state.update_data(topup_amount=amount)

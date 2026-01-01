@@ -212,18 +212,8 @@ async def ask_for_target_link(message_or_callback, action_type: str, quantity: i
     action_name = get_action_name(action_type)
     action_emoji = get_action_emoji(action_type)
     
-    # Get actual price from SteamSmm API
-    client = SteamSmmClient()
-    stats = await client.get_user_stats()
-    
-    price_per_unit = get_price_per_unit(quantity)  # Fallback
-    
-    if stats.success and stats.action_prices:
-        action_price_info = stats.action_prices.get(action_type, {})
-        if action_price_info.get("type") == "fixed" and action_price_info.get("value"):
-            price_per_unit = float(action_price_info["value"])
-        # For dynamic pricing, use our calculation
-    
+    # Use standard dynamic pricing
+    price_per_unit = get_price_per_unit(quantity)
     total_cost = quantity * price_per_unit
     
     # Save price to state

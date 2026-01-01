@@ -1,50 +1,35 @@
-"""Exchange rates API client using CoinGecko."""
+"""Exchange rates from CryptoBot API."""
 
-import aiohttp
-import ssl
 from typing import Optional
-
-# CoinGecko API (free, no API key required)
-COINGECKO_API_URL = "https://api.coingecko.com/api/v3"
+from bot.services.cryptobot import CryptoBotClient
 
 
 async def get_crypto_rates() -> dict:
-    """Get crypto rates from CoinGecko.
+    """Get crypto rates from CryptoBot API.
     
     Returns:
         Dictionary with rates: {"USDT": rate_in_rub, "TON": rate_in_rub}
     """
     # Fallback rates
     rates = {
-        "USDT": 100.0,
-        "TON": 500.0,
+        "USDT": 90.0,
+        "TON": 400.0,
     }
     
     try:
-        ssl_context = ssl.create_default_context()
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+        client = CryptoBotClient()
+        exchange_rates = await client.get_exchange_rates()
         
-        connector = aiohttp.TCPConnector(ssl=ssl_context)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(
-                f"{COINGECKO_API_URL}/simple/price",
-                params={
-                    "ids": "tether,the-open-network",
-                    "vs_currencies": "rub"
-                },
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    
-                    # USDT (Tether)
-                    if "tether" in data and "rub" in data["tether"]:
-                        rates["USDT"] = float(data["tether"]["rub"])
-                    
-                    # TON (The Open Network)
-                    if "the-open-network" in data and "rub" in data["the-open-network"]:
-                        rates["TON"] = float(data["the-open-network"]["rub"])
+        for rate_info in exchange_rates:
+            source = rate_info.get("source")
+            target = rate_info.get("target")
+            rate_value = rate_info.get("rate")
+            
+            if target == "RUB" and rate_value:
+                if source == "USDT":
+                    rates["USDT"] = float(rate_value)
+                elif source == "TON":
+                    rates["TON"] = float(rate_value)
     
     except Exception:
         pass

@@ -3,6 +3,7 @@
 import hashlib
 import hmac
 import json
+import ssl
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import aiohttp
@@ -44,12 +45,17 @@ class CryptoBotClient:
     """Client for CryptoBot Crypto Pay API."""
     
     # Supported cryptocurrencies
-    SUPPORTED_ASSETS = ["USDT", "TON", "BTC", "ETH", "LTC", "BNB", "TRX", "USDC"]
+    SUPPORTED_ASSETS = ["USDT", "TON"]
     
     def __init__(self):
         """Initialize the CryptoBot client."""
         self.api_token = settings.cryptobot_api_token
         self.api_url = settings.cryptobot_api_url
+        
+        # SSL context (disable verification for compatibility)
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.check_hostname = False
+        self.ssl_context.verify_mode = ssl.CERT_NONE
     
     def _get_headers(self) -> Dict[str, str]:
         """Get request headers with API token."""
@@ -57,6 +63,10 @@ class CryptoBotClient:
             "Crypto-Pay-API-Token": self.api_token,
             "Content-Type": "application/json"
         }
+    
+    def _get_connector(self) -> aiohttp.TCPConnector:
+        """Get aiohttp connector with SSL settings."""
+        return aiohttp.TCPConnector(ssl=self.ssl_context)
     
     def verify_webhook_signature(self, body: bytes, signature: str) -> bool:
         """Verify webhook signature from CryptoBot.
@@ -88,7 +98,7 @@ class CryptoBotClient:
             App information.
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=self._get_connector()) as session:
                 async with session.get(
                     f"{self.api_url}/getMe",
                     headers=self._get_headers()
@@ -107,7 +117,7 @@ class CryptoBotClient:
             List of balance entries.
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=self._get_connector()) as session:
                 async with session.get(
                     f"{self.api_url}/getBalance",
                     headers=self._get_headers()
@@ -126,7 +136,7 @@ class CryptoBotClient:
             List of exchange rate entries.
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=self._get_connector()) as session:
                 async with session.get(
                     f"{self.api_url}/getExchangeRates",
                     headers=self._get_headers()
@@ -145,7 +155,7 @@ class CryptoBotClient:
             List of currency entries.
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=self._get_connector()) as session:
                 async with session.get(
                     f"{self.api_url}/getCurrencies",
                     headers=self._get_headers()
@@ -203,7 +213,7 @@ class CryptoBotClient:
             params["allow_anonymous"] = allow_anonymous
             params["expires_in"] = expires_in
             
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=self._get_connector()) as session:
                 async with session.post(
                     f"{self.api_url}/createInvoice",
                     headers=self._get_headers(),
@@ -262,7 +272,7 @@ class CryptoBotClient:
             if status:
                 params["status"] = status
             
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=self._get_connector()) as session:
                 async with session.get(
                     f"{self.api_url}/getInvoices",
                     headers=self._get_headers(),
@@ -317,7 +327,7 @@ class CryptoBotClient:
             True if deleted successfully.
         """
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(connector=self._get_connector()) as session:
                 async with session.post(
                     f"{self.api_url}/deleteInvoice",
                     headers=self._get_headers(),
