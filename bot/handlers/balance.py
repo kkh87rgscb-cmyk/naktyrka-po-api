@@ -11,7 +11,6 @@ from sqlalchemy import select
 from bot.models.database import User, Payment, async_session_maker
 from bot.services.antilopay import AntilopayClient, generate_order_id
 from bot.services.cryptobot import CryptoBotClient
-from bot.services.exchange_rates import get_crypto_rates
 from bot.utils.keyboards import (
     topup_amount_keyboard, 
     payment_method_keyboard, 
@@ -321,25 +320,24 @@ async def callback_cryptobot_payment(callback: CallbackQuery, state: FSMContext)
 @router.callback_query(F.data.startswith("crypto:"))
 async def callback_crypto_currency(callback: CallbackQuery, state: FSMContext):
     """Handle cryptocurrency selection and create invoice."""
+    from bot.config import settings
+    
     parts = callback.data.split(":")
     currency = parts[1]
     amount_rub = float(parts[2])
     
     await callback.message.edit_text(
-        "⏳ Получаем курс с Binance...",
+        "⏳ Создаём счёт...",
         parse_mode="HTML"
     )
     
-    # Get rates from Binance
-    rates = await get_crypto_rates()
-    rate = rates.get(currency, 90.0)
+    # Use rate from config
+    rate = settings.usdt_rub_rate
     crypto_amount = round(amount_rub / rate, 2)
     
-    # Minimum amounts
-    if currency == "USDT" and crypto_amount < 1:
+    # Minimum amount
+    if crypto_amount < 1:
         crypto_amount = 1.0
-    if currency == "TON" and crypto_amount < 0.1:
-        crypto_amount = 0.1
     
     # Create CryptoBot invoice
     client = CryptoBotClient()

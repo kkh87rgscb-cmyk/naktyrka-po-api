@@ -129,21 +129,15 @@ def payment_method_keyboard(amount: float) -> InlineKeyboardMarkup:
 
 
 def crypto_currency_keyboard(amount: float) -> InlineKeyboardMarkup:
-    """Create cryptocurrency selection keyboard."""
+    """Create cryptocurrency selection keyboard (USDT only)."""
     builder = InlineKeyboardBuilder()
     
-    currencies = [
-        ("💵 USDT", "USDT"),
-        ("💎 TON", "TON"),
-    ]
-    
-    for label, currency in currencies:
-        builder.row(
-            InlineKeyboardButton(
-                text=label,
-                callback_data=f"crypto:{currency}:{amount}"
-            )
+    builder.row(
+        InlineKeyboardButton(
+            text="💵 USDT (TRC20)",
+            callback_data=f"crypto:USDT:{amount}"
         )
+    )
     
     builder.row(
         InlineKeyboardButton(text="◀️ Назад", callback_data=f"menu:topup")

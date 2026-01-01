@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite+aiosqlite:///./bot_database.db"
     
+    # Crypto exchange rate (1 USDT = X RUB)
+    usdt_rub_rate: float = 90.0
+    
     @property
     def admin_ids_list(self) -> List[int]:
         """Parse admin IDs from comma-separated string."""
