@@ -1,11 +1,11 @@
 """Admin panel handlers."""
 
-from aiogram import Router, F
+from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from sqlalchemy import select, func
+from sqlalchemy import select, func, or_
 
 from bot.models.database import User, Order, Payment, async_session_maker
 from bot.services.antilopay import AntilopayClient
@@ -18,14 +18,61 @@ router = Router()
 
 class AdminStates(StatesGroup):
     """States for admin operations."""
-    waiting_broadcast_message = State()
-    waiting_user_id_for_balance = State()
+    waiting_search_query = State()
     waiting_balance_amount = State()
+    waiting_broadcast_message = State()
 
 
 def is_admin(user_id: int) -> bool:
     """Check if user is admin."""
     return user_id in settings.admin_ids_list
+
+
+async def notify_admins_new_order(bot: Bot, order_data: dict):
+    """Send notification to all admins about new order.
+    
+    Args:
+        bot: Telegram bot instance.
+        order_data: Order information.
+    """
+    text = f"""
+🆕 <b>Новый заказ!</b>
+
+👤 Пользователь: <code>{order_data.get('user_id')}</code>
+📌 Тип: <b>{order_data.get('action_type')}</b>
+📊 Количество: <b>{order_data.get('quantity')}</b>
+💵 Сумма: <b>{order_data.get('cost'):.2f} ₽</b>
+🔗 Ссылка: <code>{order_data.get('target_link', '')[:50]}...</code>
+"""
+    
+    for admin_id in settings.admin_ids_list:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception:
+            pass
+
+
+async def notify_admins_new_payment(bot: Bot, payment_data: dict):
+    """Send notification to all admins about new payment.
+    
+    Args:
+        bot: Telegram bot instance.
+        payment_data: Payment information.
+    """
+    text = f"""
+💰 <b>Новый платёж!</b>
+
+👤 Пользователь: <code>{payment_data.get('user_id')}</code>
+💳 Система: <b>{payment_data.get('payment_system')}</b>
+💵 Сумма: <b>{payment_data.get('amount'):.2f} ₽</b>
+📊 Статус: <b>{payment_data.get('status')}</b>
+"""
+    
+    for admin_id in settings.admin_ids_list:
+        try:
+            await bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @router.message(Command("admin"))
@@ -35,190 +82,259 @@ async def cmd_admin(message: Message):
         await message.answer("❌ У вас нет доступа к админ-панели")
         return
     
+    await show_admin_panel(message)
+
+
+async def show_admin_panel(message_or_callback, edit: bool = False):
+    """Show admin panel."""
     text = """
 🔐 <b>Админ-панель</b>
 
 Выберите действие:
 """
     
-    await message.answer(
-        text,
-        reply_markup=admin_keyboard(),
-        parse_mode="HTML"
-    )
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔍 Поиск пользователя", callback_data="admin:search"),
+        ],
+        [
+            InlineKeyboardButton(text="👥 Все пользователи", callback_data="admin:users"),
+            InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"),
+        ],
+        [
+            InlineKeyboardButton(text="📋 Последние заказы", callback_data="admin:orders"),
+        ],
+        [
+            InlineKeyboardButton(text="📨 Рассылка", callback_data="admin:broadcast"),
+        ],
+        [
+            InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main"),
+        ]
+    ])
+    
+    if edit and hasattr(message_or_callback, 'message'):
+        await message_or_callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        await message_or_callback.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 
-@router.callback_query(F.data == "admin:stats")
-async def callback_admin_stats(callback: CallbackQuery):
-    """Show admin statistics."""
+@router.callback_query(F.data == "admin:back")
+async def callback_admin_back(callback: CallbackQuery, state: FSMContext):
+    """Go back to admin panel."""
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     
+    await state.clear()
+    await show_admin_panel(callback, edit=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:search")
+async def callback_admin_search(callback: CallbackQuery, state: FSMContext):
+    """Start user search."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        "🔍 <b>Поиск пользователя</b>\n\n"
+        "Введите <b>Telegram ID</b> или <b>@username</b>:",
+        parse_mode="HTML"
+    )
+    await state.set_state(AdminStates.waiting_search_query)
+    await callback.answer()
+
+
+@router.message(AdminStates.waiting_search_query)
+async def process_search_query(message: Message, state: FSMContext):
+    """Process user search query."""
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        return
+    
+    query = message.text.strip()
+    
     async with async_session_maker() as session:
-        # Count users
-        users_count = await session.execute(
-            select(func.count(User.id))
-        )
-        total_users = users_count.scalar() or 0
+        # Search by telegram_id or username
+        if query.startswith("@"):
+            username = query[1:]  # Remove @
+            result = await session.execute(
+                select(User).where(User.username.ilike(f"%{username}%"))
+            )
+        elif query.isdigit():
+            result = await session.execute(
+                select(User).where(User.telegram_id == int(query))
+            )
+        else:
+            # Search by username without @
+            result = await session.execute(
+                select(User).where(
+                    or_(
+                        User.username.ilike(f"%{query}%"),
+                        User.first_name.ilike(f"%{query}%")
+                    )
+                )
+            )
         
-        # Count orders
+        users = result.scalars().all()
+    
+    await state.clear()
+    
+    if not users:
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔍 Искать снова", callback_data="admin:search")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back")]
+        ])
+        await message.answer(
+            f"❌ Пользователь не найден: <code>{query}</code>",
+            reply_markup=keyboard,
+            parse_mode="HTML"
+        )
+        return
+    
+    if len(users) == 1:
+        # Show single user
+        await show_user_details(message, users[0])
+    else:
+        # Show list of found users
+        text = f"🔍 <b>Найдено пользователей: {len(users)}</b>\n\n"
+        
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        buttons = []
+        
+        for user in users[:10]:  # Max 10 results
+            username = f"@{user.username}" if user.username else "—"
+            name = user.first_name or "Без имени"
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{name} | {username} | {user.balance:.2f}₽",
+                    callback_data=f"admin:user:{user.telegram_id}"
+                )
+            ])
+        
+        buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+
+
+async def show_user_details(message_or_callback, user: User, edit: bool = False):
+    """Show user details with balance edit option."""
+    username = f"@{user.username}" if user.username else "—"
+    name = user.first_name or "Без имени"
+    
+    # Count orders
+    async with async_session_maker() as session:
         orders_count = await session.execute(
-            select(func.count(Order.id))
+            select(func.count(Order.id)).where(Order.user_id == user.id)
         )
         total_orders = orders_count.scalar() or 0
         
-        # Count completed orders
-        completed_count = await session.execute(
-            select(func.count(Order.id)).where(Order.status == "completed")
-        )
-        completed_orders = completed_count.scalar() or 0
-        
-        # Sum of all order costs
         orders_sum = await session.execute(
-            select(func.sum(Order.cost))
+            select(func.sum(Order.cost)).where(Order.user_id == user.id)
         )
-        total_revenue = orders_sum.scalar() or 0
-        
-        # Sum of successful payments
-        payments_sum = await session.execute(
-            select(func.sum(Payment.amount)).where(Payment.status == "success")
-        )
-        total_payments = payments_sum.scalar() or 0
-        
-        # Count payments
-        payments_count = await session.execute(
-            select(func.count(Payment.id)).where(Payment.status == "success")
-        )
-        successful_payments = payments_count.scalar() or 0
-        
-        # Total user balances
-        balances_sum = await session.execute(
-            select(func.sum(User.balance))
-        )
-        total_balances = balances_sum.scalar() or 0
+        total_spent = orders_sum.scalar() or 0
     
     text = f"""
-📊 <b>Статистика</b>
+👤 <b>Пользователь</b>
 
-👥 <b>Пользователи:</b>
-• Всего: <b>{total_users}</b>
+🆔 Telegram ID: <code>{user.telegram_id}</code>
+👤 Имя: <b>{name}</b>
+📧 Username: {username}
 
-📋 <b>Заказы:</b>
-• Всего: <b>{total_orders}</b>
-• Выполнено: <b>{completed_orders}</b>
-• Сумма: <b>{total_revenue:.2f} ₽</b>
+💰 Баланс: <b>{user.balance:.2f} ₽</b>
+📋 Заказов: <b>{total_orders}</b>
+💵 Потрачено: <b>{total_spent:.2f} ₽</b>
 
-💳 <b>Платежи:</b>
-• Успешных: <b>{successful_payments}</b>
-• Сумма: <b>{total_payments:.2f} ₽</b>
-
-💰 <b>Балансы пользователей:</b>
-• Общая сумма: <b>{total_balances:.2f} ₽</b>
+📅 Регистрация: {user.created_at.strftime("%d.%m.%Y %H:%M") if user.created_at else "—"}
 """
     
-    await callback.message.edit_text(
-        text,
-        reply_markup=admin_keyboard(),
-        parse_mode="HTML"
-    )
-    await callback.answer()
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="💰 Изменить баланс",
+                callback_data=f"admin:balance:{user.telegram_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                text="📋 Заказы пользователя",
+                callback_data=f"admin:user_orders:{user.telegram_id}"
+            )
+        ],
+        [
+            InlineKeyboardButton(text="🔍 Искать другого", callback_data="admin:search"),
+            InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back")
+        ]
+    ])
+    
+    if edit and hasattr(message_or_callback, 'edit_text'):
+        await message_or_callback.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    elif hasattr(message_or_callback, 'message'):
+        await message_or_callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    else:
+        await message_or_callback.answer(text, reply_markup=keyboard, parse_mode="HTML")
 
 
-@router.callback_query(F.data == "admin:users")
-async def callback_admin_users(callback: CallbackQuery):
-    """Show recent users."""
+@router.callback_query(F.data.startswith("admin:user:"))
+async def callback_show_user(callback: CallbackQuery):
+    """Show user details by telegram_id."""
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     
+    telegram_id = int(callback.data.split(":")[2])
+    
     async with async_session_maker() as session:
-        # Get recent users
-        users_result = await session.execute(
-            select(User).order_by(User.created_at.desc()).limit(10)
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
         )
-        users = users_result.scalars().all()
-        
-        # Total count
-        count_result = await session.execute(
-            select(func.count(User.id))
-        )
-        total_count = count_result.scalar() or 0
+        user = result.scalar_one_or_none()
     
-    text = f"""
-👥 <b>Пользователи</b> ({total_count} всего)
-
-<b>Последние 10 пользователей:</b>
-
-"""
+    if not user:
+        await callback.answer("Пользователь не найден", show_alert=True)
+        return
     
-    for user in users:
-        username = f"@{user.username}" if user.username else "без username"
-        name = user.first_name or "Без имени"
-        text += f"• <code>{user.telegram_id}</code> | {name} | {username} | {user.balance:.2f}₽\n"
-    
-    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💰 Изменить баланс", callback_data="admin:change_balance")],
-        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back")]
-    ])
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=keyboard,
-        parse_mode="HTML"
-    )
+    await show_user_details(callback, user)
     await callback.answer()
 
 
-@router.callback_query(F.data == "admin:change_balance")
+@router.callback_query(F.data.startswith("admin:balance:"))
 async def callback_change_balance(callback: CallbackQuery, state: FSMContext):
     """Start balance change flow."""
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     
-    await callback.message.edit_text(
-        "💰 <b>Изменение баланса</b>\n\n"
-        "Отправьте Telegram ID пользователя:",
-        parse_mode="HTML"
-    )
-    await state.set_state(AdminStates.waiting_user_id_for_balance)
-    await callback.answer()
-
-
-@router.message(AdminStates.waiting_user_id_for_balance)
-async def process_user_id_for_balance(message: Message, state: FSMContext):
-    """Process user ID for balance change."""
-    if not is_admin(message.from_user.id):
-        await state.clear()
+    telegram_id = int(callback.data.split(":")[2])
+    await state.update_data(target_user_id=telegram_id)
+    
+    async with async_session_maker() as session:
+        result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = result.scalar_one_or_none()
+    
+    if not user:
+        await callback.answer("Пользователь не найден", show_alert=True)
         return
     
-    try:
-        user_id = int(message.text.strip())
-        
-        async with async_session_maker() as session:
-            user_result = await session.execute(
-                select(User).where(User.telegram_id == user_id)
-            )
-            user = user_result.scalar_one_or_none()
-            
-            if not user:
-                await message.answer("❌ Пользователь не найден")
-                return
-            
-            await state.update_data(target_user_id=user_id)
-            
-            await message.answer(
-                f"👤 Пользователь: {user.first_name or 'Без имени'}\n"
-                f"💰 Текущий баланс: {user.balance:.2f} ₽\n\n"
-                "Введите новый баланс (или +/-сумма для изменения):",
-                parse_mode="HTML"
-            )
-            await state.set_state(AdminStates.waiting_balance_amount)
-            
-    except ValueError:
-        await message.answer("❌ Введите корректный Telegram ID (число)")
+    await callback.message.edit_text(
+        f"💰 <b>Изменение баланса</b>\n\n"
+        f"Пользователь: <code>{telegram_id}</code>\n"
+        f"Текущий баланс: <b>{user.balance:.2f} ₽</b>\n\n"
+        f"Введите новый баланс или изменение:\n"
+        f"• <code>100</code> — установить 100₽\n"
+        f"• <code>+50</code> — добавить 50₽\n"
+        f"• <code>-30</code> — вычесть 30₽",
+        parse_mode="HTML"
+    )
+    await state.set_state(AdminStates.waiting_balance_amount)
+    await callback.answer()
 
 
 @router.message(AdminStates.waiting_balance_amount)
@@ -232,13 +348,13 @@ async def process_balance_amount(message: Message, state: FSMContext):
     target_user_id = data.get("target_user_id")
     
     try:
-        amount_str = message.text.strip()
+        amount_str = message.text.strip().replace(",", ".")
         
         async with async_session_maker() as session:
-            user_result = await session.execute(
+            result = await session.execute(
                 select(User).where(User.telegram_id == target_user_id)
             )
-            user = user_result.scalar_one_or_none()
+            user = result.scalar_one_or_none()
             
             if not user:
                 await message.answer("❌ Пользователь не найден")
@@ -247,21 +363,34 @@ async def process_balance_amount(message: Message, state: FSMContext):
             
             old_balance = user.balance
             
-            if amount_str.startswith("+") or amount_str.startswith("-"):
-                # Relative change
-                delta = float(amount_str.replace(",", "."))
+            if amount_str.startswith("+"):
+                delta = float(amount_str[1:])
                 user.balance += delta
+                action = f"добавлено {delta:.2f}₽"
+            elif amount_str.startswith("-"):
+                delta = float(amount_str[1:])
+                user.balance -= delta
+                action = f"вычтено {delta:.2f}₽"
             else:
-                # Absolute value
-                user.balance = float(amount_str.replace(",", "."))
+                user.balance = float(amount_str)
+                action = f"установлено {user.balance:.2f}₽"
             
             await session.commit()
             
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👤 К пользователю", callback_data=f"admin:user:{target_user_id}")],
+                [InlineKeyboardButton(text="◀️ Админ-панель", callback_data="admin:back")]
+            ])
+            
             await message.answer(
-                f"✅ Баланс изменён!\n\n"
-                f"Было: {old_balance:.2f} ₽\n"
-                f"Стало: {user.balance:.2f} ₽",
-                reply_markup=admin_keyboard()
+                f"✅ <b>Баланс изменён!</b>\n\n"
+                f"Пользователь: <code>{target_user_id}</code>\n"
+                f"Было: <b>{old_balance:.2f} ₽</b>\n"
+                f"Стало: <b>{user.balance:.2f} ₽</b>\n"
+                f"Действие: {action}",
+                reply_markup=keyboard,
+                parse_mode="HTML"
             )
             
     except ValueError:
@@ -271,61 +400,174 @@ async def process_balance_amount(message: Message, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(F.data == "admin:balances")
-async def callback_admin_balances(callback: CallbackQuery):
-    """Show payment system balances."""
+@router.callback_query(F.data.startswith("admin:user_orders:"))
+async def callback_user_orders(callback: CallbackQuery):
+    """Show user's orders."""
     if not is_admin(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     
-    await callback.message.edit_text(
-        "⏳ Загрузка балансов...",
-        parse_mode="HTML"
-    )
+    telegram_id = int(callback.data.split(":")[2])
     
-    text = "💰 <b>Балансы платёжных систем</b>\n\n"
-    
-    # Antilopay balance
-    try:
-        antilopay = AntilopayClient()
-        balance = await antilopay.get_project_balance()
+    async with async_session_maker() as session:
+        # Get user
+        user_result = await session.execute(
+            select(User).where(User.telegram_id == telegram_id)
+        )
+        user = user_result.scalar_one_or_none()
         
-        if balance.get("code") == 0:
-            rub_balance = balance.get("rub", {})
-            available = rub_balance.get("available", 0)
-            blocked = rub_balance.get("blocked", 0)
-            withdraw = rub_balance.get("withdraw", 0)
-            
-            text += f"<b>💳 Antilopay:</b>\n"
-            text += f"• Доступно: {available:.2f} ₽\n"
-            text += f"• Заблокировано: {blocked:.2f} ₽\n"
-            text += f"• На вывод: {withdraw:.2f} ₽\n\n"
-        else:
-            text += f"<b>💳 Antilopay:</b> ❌ {balance.get('error', 'Ошибка')}\n\n"
-    except Exception as e:
-        text += f"<b>💳 Antilopay:</b> ❌ {str(e)}\n\n"
-    
-    # CryptoBot balance
-    try:
-        cryptobot = CryptoBotClient()
-        balances = await cryptobot.get_balance()
+        if not user:
+            await callback.answer("Пользователь не найден", show_alert=True)
+            return
         
-        if balances:
-            text += "<b>🪙 CryptoBot:</b>\n"
-            for bal in balances:
-                currency = bal.get("currency_code", "???")
-                available = bal.get("available", "0")
-                text += f"• {currency}: {available}\n"
-        else:
-            text += "<b>🪙 CryptoBot:</b> Нет данных\n"
-    except Exception as e:
-        text += f"<b>🪙 CryptoBot:</b> ❌ {str(e)}\n"
+        # Get orders
+        orders_result = await session.execute(
+            select(Order)
+            .where(Order.user_id == user.id)
+            .order_by(Order.created_at.desc())
+            .limit(10)
+        )
+        orders = orders_result.scalars().all()
     
-    await callback.message.edit_text(
-        text,
-        reply_markup=admin_keyboard(),
-        parse_mode="HTML"
-    )
+    if not orders:
+        text = f"📋 <b>Заказы пользователя</b>\n\nУ пользователя нет заказов."
+    else:
+        text = f"📋 <b>Заказы пользователя</b> (последние 10)\n\n"
+        for order in orders:
+            status_emoji = {"pending": "⏳", "processing": "🔄", "completed": "✅", "failed": "❌"}.get(order.status, "❓")
+            text += f"{status_emoji} {order.action_type} × {order.quantity} = {order.cost:.2f}₽\n"
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 К пользователю", callback_data=f"admin:user:{telegram_id}")],
+        [InlineKeyboardButton(text="◀️ Админ-панель", callback_data="admin:back")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:stats")
+async def callback_admin_stats(callback: CallbackQuery):
+    """Show admin statistics."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    
+    async with async_session_maker() as session:
+        users_count = await session.execute(select(func.count(User.id)))
+        total_users = users_count.scalar() or 0
+        
+        orders_count = await session.execute(select(func.count(Order.id)))
+        total_orders = orders_count.scalar() or 0
+        
+        completed_count = await session.execute(
+            select(func.count(Order.id)).where(Order.status == "completed")
+        )
+        completed_orders = completed_count.scalar() or 0
+        
+        orders_sum = await session.execute(select(func.sum(Order.cost)))
+        total_revenue = orders_sum.scalar() or 0
+        
+        payments_sum = await session.execute(
+            select(func.sum(Payment.amount)).where(Payment.status == "success")
+        )
+        total_payments = payments_sum.scalar() or 0
+        
+        balances_sum = await session.execute(select(func.sum(User.balance)))
+        total_balances = balances_sum.scalar() or 0
+    
+    text = f"""
+📊 <b>Статистика</b>
+
+👥 <b>Пользователи:</b> {total_users}
+
+📋 <b>Заказы:</b>
+• Всего: {total_orders}
+• Выполнено: {completed_orders}
+• Сумма: {total_revenue:.2f} ₽
+
+💳 <b>Платежи:</b>
+• Сумма: {total_payments:.2f} ₽
+
+💰 <b>Балансы пользователей:</b> {total_balances:.2f} ₽
+"""
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:users")
+async def callback_admin_users(callback: CallbackQuery):
+    """Show recent users."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    
+    async with async_session_maker() as session:
+        users_result = await session.execute(
+            select(User).order_by(User.created_at.desc()).limit(10)
+        )
+        users = users_result.scalars().all()
+        
+        count_result = await session.execute(select(func.count(User.id)))
+        total_count = count_result.scalar() or 0
+    
+    text = f"👥 <b>Пользователи</b> ({total_count} всего)\n\n"
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    buttons = []
+    
+    for user in users:
+        username = f"@{user.username}" if user.username else "—"
+        name = user.first_name or "—"
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{name} | {username} | {user.balance:.2f}₽",
+                callback_data=f"admin:user:{user.telegram_id}"
+            )
+        ])
+    
+    buttons.append([InlineKeyboardButton(text="🔍 Поиск", callback_data="admin:search")])
+    buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back")])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:orders")
+async def callback_admin_orders(callback: CallbackQuery):
+    """Show recent orders."""
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    
+    async with async_session_maker() as session:
+        orders_result = await session.execute(
+            select(Order).order_by(Order.created_at.desc()).limit(15)
+        )
+        orders = orders_result.scalars().all()
+    
+    if not orders:
+        text = "📋 <b>Последние заказы</b>\n\nЗаказов пока нет."
+    else:
+        text = "📋 <b>Последние заказы</b>\n\n"
+        for order in orders:
+            status_emoji = {"pending": "⏳", "processing": "🔄", "completed": "✅", "failed": "❌"}.get(order.status, "❓")
+            text += f"{status_emoji} {order.action_type} × {order.quantity} = {order.cost:.2f}₽\n"
+    
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back")]
+    ])
+    
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="HTML")
     await callback.answer()
 
 
@@ -339,7 +581,8 @@ async def callback_admin_broadcast(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "📨 <b>Рассылка</b>\n\n"
         "Отправьте сообщение для рассылки всем пользователям.\n\n"
-        "Поддерживается форматирование HTML.",
+        "Поддерживается HTML форматирование.\n"
+        "Отправьте /cancel для отмены.",
         parse_mode="HTML"
     )
     await state.set_state(AdminStates.waiting_broadcast_message)
@@ -353,12 +596,13 @@ async def process_broadcast_message(message: Message, state: FSMContext):
         await state.clear()
         return
     
-    if message.text == "❌ Отмена":
+    if message.text == "/cancel":
         await state.clear()
-        await message.answer(
-            "Рассылка отменена",
-            reply_markup=admin_keyboard()
-        )
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="◀️ Админ-панель", callback_data="admin:back")]
+        ])
+        await message.answer("Рассылка отменена", reply_markup=keyboard)
         return
     
     broadcast_text = message.text or message.caption or ""
@@ -369,28 +613,22 @@ async def process_broadcast_message(message: Message, state: FSMContext):
     
     await state.clear()
     
-    # Get all users
     async with async_session_maker() as session:
-        users_result = await session.execute(
-            select(User.telegram_id)
-        )
+        users_result = await session.execute(select(User.telegram_id))
         user_ids = [row[0] for row in users_result.fetchall()]
     
     if not user_ids:
         await message.answer("❌ Нет пользователей для рассылки")
         return
     
-    await message.answer(f"📨 Начинаю рассылку для {len(user_ids)} пользователей...")
+    status_msg = await message.answer(f"📨 Рассылка: 0/{len(user_ids)}...")
     
     success_count = 0
     fail_count = 0
     
-    from aiogram import Bot
-    bot = message.bot
-    
-    for user_id in user_ids:
+    for i, user_id in enumerate(user_ids):
         try:
-            await bot.send_message(
+            await message.bot.send_message(
                 chat_id=user_id,
                 text=broadcast_text,
                 parse_mode="HTML"
@@ -399,34 +637,24 @@ async def process_broadcast_message(message: Message, state: FSMContext):
         except Exception:
             fail_count += 1
         
-        # Small delay to avoid flood limits
+        if (i + 1) % 10 == 0:
+            try:
+                await status_msg.edit_text(f"📨 Рассылка: {i+1}/{len(user_ids)}...")
+            except Exception:
+                pass
+        
         import asyncio
         await asyncio.sleep(0.05)
     
-    await message.answer(
-        f"✅ Рассылка завершена!\n\n"
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Админ-панель", callback_data="admin:back")]
+    ])
+    
+    await status_msg.edit_text(
+        f"✅ <b>Рассылка завершена!</b>\n\n"
         f"Успешно: {success_count}\n"
         f"Ошибок: {fail_count}",
-        reply_markup=admin_keyboard()
-    )
-
-
-@router.callback_query(F.data == "admin:back")
-async def callback_admin_back(callback: CallbackQuery):
-    """Go back to admin menu."""
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    
-    text = """
-🔐 <b>Админ-панель</b>
-
-Выберите действие:
-"""
-    
-    await callback.message.edit_text(
-        text,
-        reply_markup=admin_keyboard(),
+        reply_markup=keyboard,
         parse_mode="HTML"
     )
-    await callback.answer()

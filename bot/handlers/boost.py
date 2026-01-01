@@ -393,6 +393,19 @@ async def callback_confirm_order(callback: CallbackQuery, state: FSMContext):
             action_name = get_action_name(action_type)
             action_emoji = get_action_emoji(action_type)
             
+            # Notify admins about new order
+            from bot.handlers.admin import notify_admins_new_order
+            await notify_admins_new_order(
+                callback.bot,
+                {
+                    "user_id": callback.from_user.id,
+                    "action_type": action_name,
+                    "quantity": quantity,
+                    "cost": result.cost or total_cost,
+                    "target_link": target_link
+                }
+            )
+            
             text = f"""
 ✅ <b>Заказ успешно создан!</b>
 
