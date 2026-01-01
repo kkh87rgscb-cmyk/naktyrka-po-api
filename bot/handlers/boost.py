@@ -131,7 +131,7 @@ async def callback_select_boost_type(callback: CallbackQuery, state: FSMContext)
 • 200-299 шт: <b>0.75 ₽/шт</b> (-25%)
 • 300-499 шт: <b>0.65 ₽/шт</b> (-35%)
 • 500-999 шт: <b>0.60 ₽/шт</b> (-40%)
-• 1000+ шт: <b>0.50 ₽/шт</b> (-50%)
+• 1000+ шт: <b>0.55 ₽/шт</b> (-45%)
 """
     
     await callback.message.edit_text(
@@ -438,7 +438,7 @@ async def callback_prices(callback: CallbackQuery):
 • 200-299 шт: <b>0.75 ₽/шт</b> (скидка 25%)
 • 300-499 шт: <b>0.65 ₽/шт</b> (скидка 35%)
 • 500-999 шт: <b>0.60 ₽/шт</b> (скидка 40%)
-• 1000+ шт: <b>0.50 ₽/шт</b> (скидка 50%)
+• 1000+ шт: <b>0.55 ₽/шт</b> (скидка 45%)
 
 <b>Доступные услуги:</b>
 💬 Комментарии на профиле
@@ -449,7 +449,7 @@ async def callback_prices(callback: CallbackQuery):
 <b>Примеры расчёта:</b>
 • 100 комментариев = 85 ₽
 • 500 лайков = 300 ₽
-• 1000 подписок = 500 ₽
+• 1000 подписок = 550 ₽
 """
     
     from bot.utils.keyboards import prices_keyboard
